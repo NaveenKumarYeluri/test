@@ -142,9 +142,7 @@ class MainActivity : Activity() {
             c.release()
             muxer?.stop()
             muxer?.release()
-            muxer = null
             outputSurface?.release()
-            outputSurface = null
             codec = null
 
             virtualDisplay?.release()

@@ -185,7 +185,7 @@ class MainActivity : Activity() {
                 if (audioInIndex >= 0) {
                     val audioBuf = audioEnc.getInputBuffer(audioInIndex) ?: return@Thread
                     audioBuf.position(0)
-                    val read = record.read(audioBuf, 0, audioBuf.capacity)
+                    val read = record.read(audioBuf, 0, audioBuf.capacity())
                     if (read > 0) {
                         audioBufferInfo.offset = 0
                         audioBufferInfo.size = read

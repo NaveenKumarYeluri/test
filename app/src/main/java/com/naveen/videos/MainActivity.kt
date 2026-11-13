@@ -7,13 +7,12 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionCallback
 import android.media.projection.MediaProjectionInfo
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.os.Handler
+import android.display.DisplayManager
 import android.view.Display
-import android.view.DisplayManager
 import android.view.Surface
 import android.view.WindowManager
 import android.widget.Button
@@ -71,7 +70,8 @@ class MainActivity : Activity() {
     protected override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == captureRequestCode && resultCode == RESULT_OK) {
             val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+            val intent = data ?: return@onActivityResult
+            mediaProjection = projectionManager.getMediaProjection(resultCode, intent)
             mediaProjection?.registerMediaProjectionCallback(captureCallback, handler)
             statusText.text = "Preparing capture…"
         } else {
@@ -87,7 +87,7 @@ class MainActivity : Activity() {
 
         val displayMetrics = resources.displayMetrics
         val width = displayMetrics.widthPixels.coerceAtLeast(320)
-        val height = displayMetrics.heightPixels.coerceAtLeast(240
+        val height = displayMetrics.heightPixels.coerceAtLeast(240)
 
         val videoFormat = MediaFormat.createVideoFormat("video/avc", width, height).apply {
             setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
@@ -125,11 +125,9 @@ class MainActivity : Activity() {
 
         Thread {
             val c = codec ?: return@Thread
-            c.signalEndOfInputStream()
-
             val bufferInfo = MediaCodec.BufferInfo()
             var endOfStream = false
-            while (!endOfStream) {
+            while (!endOfStream && !stopRequested.get()) {
                 val outIndex = c.dequeueOutputBuffer(bufferInfo, 10_000)
                 if (outIndex >= 0) {
                     c.releaseOutputBuffer(outIndex, true, bufferInfo)
@@ -161,6 +159,7 @@ class MainActivity : Activity() {
         isCapturing = false
         stopRequested.set(true)
 
+        codec?.signalEndOfInputStream()
         mediaProjection?.stop()
         mediaProjection = null
     }

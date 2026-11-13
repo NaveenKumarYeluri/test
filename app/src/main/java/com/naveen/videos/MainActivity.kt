@@ -24,9 +24,9 @@ class MainActivity : Activity() {
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var codec: MediaCodec? = null
-    private var muxer: MediaMuxer? = null
-    private var outputSurface: Surface? = null
+    private var mediaCodec: MediaCodec? = null
+    private var mediaMuxer: MediaMuxer? = null
+    private var captureSurface: Surface? = null
     private var isCapturing = false
 
     private val stopRequested = AtomicBoolean(false)
@@ -96,17 +96,17 @@ class MainActivity : Activity() {
             setInteger(MediaFormat.KEY_FRAME_RATE, 30)
         }
 
-        val codec = MediaCodec.createEncoderByType("video/avc")
-        codec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        val surface = codec.createInputSurface()
-        codec.start()
+        val mediaCodec = MediaCodec.createEncoderByType("video/avc")
+        mediaCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val captureSurface = mediaCodec.createInputSurface()
+        mediaCodec.start()
 
-        val muxer = MediaMuxer(
+        val mediaMuxer = MediaMuxer(
             File(getExternalFilesDir(null), "capture_${System.currentTimeMillis()}.mp4").absolutePath,
             MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
         )
-        val trackIndex = muxer.addTrack(videoFormat)
-        muxer.start()
+        val trackIndex = mediaMuxer.addTrack(videoFormat)
+        mediaMuxer.start()
 
         virtualDisplay = projection.createVirtualDisplay(
             "VideosCapture",
@@ -114,18 +114,18 @@ class MainActivity : Activity() {
             height,
             displayMetrics.densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            surface,
+            captureSurface,
             null,
             handler
         )
 
-        this.codec = codec
-        this.muxer = muxer
-        this.outputSurface = surface
+        this.mediaCodec = mediaCodec
+        this.mediaMuxer = mediaMuxer
+        this.captureSurface = captureSurface
         statusText.text = "Capturing…"
 
         Thread {
-            val c = codec ?: return@Thread
+            val c = mediaCodec ?: return@Thread
             val bufferInfo = MediaCodec.BufferInfo()
             var endOfStream = false
             while (!endOfStream) {
@@ -133,7 +133,7 @@ class MainActivity : Activity() {
                 if (outIndex >= 0) {
                     val encodedData = c.getOutputBuffer(outIndex)
                     if (encodedData != null) {
-                        muxer?.writeSampleData(trackIndex, encodedData, bufferInfo)
+                        mediaMuxer?.writeSampleData(trackIndex, encodedData, bufferInfo)
                     }
                     c.releaseOutputBuffer(outIndex, true)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
@@ -144,12 +144,12 @@ class MainActivity : Activity() {
 
             c.stop()
             c.release()
-            muxer?.stop()
-            muxer?.release()
-            muxer = null
-            outputSurface?.release()
-            outputSurface = null
-            codec = null
+            mediaMuxer?.stop()
+            mediaMuxer?.release()
+            this.mediaMuxer = null
+            captureSurface?.release()
+            this.captureSurface = null
+            this.mediaCodec = null
 
             virtualDisplay?.release()
             virtualDisplay = null
@@ -164,7 +164,7 @@ class MainActivity : Activity() {
         isCapturing = false
         stopRequested.set(true)
 
-        codec?.signalEndOfInputStream()
+        mediaCodec?.signalEndOfInputStream()
         mediaProjection?.stop()
         mediaProjection = null
     }

@@ -189,7 +189,7 @@ class MainActivity : Activity() {
                     if (read > 0) {
                         audioBufferInfo.offset = 0
                         audioBufferInfo.size = read
-                        audioEnc.queueInputBuffer(audioInIndex, 0, 0, audioTimestamp, audioBuf)
+                        audioEnc.queueInputBuffer(audioInIndex, 0, read, audioTimestamp, 0)
                         audioTimestamp += read.toLong()
                     }
                 }

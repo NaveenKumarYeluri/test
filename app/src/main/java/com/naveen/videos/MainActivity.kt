@@ -39,11 +39,15 @@ class MainActivity : Activity() {
     private val handler = Handler()
 
     private val captureCallback = object : MediaProjection.Callback() {
-        override fun onCaptureStarted(mediaProjection: MediaProjection?, surfaceInfo: MediaProjectionInfo?) {
-            startCaptureSession()
+        override fun onCapturedContentResize(width: Int, height: Int) {
+            // MVP: captured region resize handled later
         }
 
-        override fun onCaptureStopped(mediaProjection: MediaProjection?) {
+        override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+            // MVP: captured region visibility handled later
+        }
+
+        override fun onStop(): Unit {
             stopCapture()
         }
     }
@@ -72,7 +76,7 @@ class MainActivity : Activity() {
             val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val intent = data ?: return@onActivityResult
             mediaProjection = projectionManager.getMediaProjection(resultCode, intent)
-            mediaProjection?.registerMediaProjectionCallback(captureCallback, handler)
+            mediaProjection?.registerCallback(captureCallback, handler)
             statusText.text = "Preparing capture…"
         } else {
             statusText.text = "Capture not started"

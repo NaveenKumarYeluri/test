@@ -3,6 +3,9 @@ package com.naveen.videos
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioPlaybackCaptureConfiguration
+import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.media.MediaMuxer
@@ -10,12 +13,14 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.os.Handler
+import android.os.Build
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.view.Surface
 import android.widget.Button
 import android.widget.TextView
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : Activity() {
@@ -27,6 +32,9 @@ class MainActivity : Activity() {
     private var mediaCodec: MediaCodec? = null
     private var mediaMuxer: MediaMuxer? = null
     private var captureSurface: Surface? = null
+    private var audioRecord: AudioRecord? = null
+    private var audioCodec: MediaCodec? = null
+    private var audioTrackIndex = -1
     private var isCapturing = false
 
     private val stopRequested = AtomicBoolean(false)
@@ -105,7 +113,34 @@ class MainActivity : Activity() {
             File(getExternalFilesDir(null), "capture_${System.currentTimeMillis()}.mp4").absolutePath,
             MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
         )
-        val trackIndex = mediaMuxer.addTrack(videoFormat)
+        val videoTrackIndex = mediaMuxer.addTrack(videoFormat)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val audioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build()
+                val captureConfig = AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
+                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                    .build()
+                val record = AudioRecord.Builder().setAudioPlaybackCaptureConfig(captureConfig).build()
+                record.startRecording()
+                audioRecord = record
+
+                val audioFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44_100, 2).apply {
+                    setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
+                    setInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
+                }
+                val audioEncoder = MediaCodec.createAudioEncoder(MediaFormat.MIMETYPE_AUDIO_AAC, 44_100, 2)
+                audioEncoder.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                audioEncoder.start()
+                audioCodec = audioEncoder
+                audioTrackIndex = mediaMuxer.addTrack(audioFormat)
+            } catch (t: Throwable) {
+                audioRecord = null
+                audioCodec = null
+                audioTrackIndex = -1
+            }
+        }
+
         mediaMuxer.start()
 
         virtualDisplay = projection.createVirtualDisplay(
@@ -126,18 +161,45 @@ class MainActivity : Activity() {
 
         Thread {
             val c = mediaCodec ?: return@Thread
+            val audioEnc = audioCodec ?: return@Thread
+            val record = audioRecord ?: return@Thread
             val bufferInfo = MediaCodec.BufferInfo()
+            val audioBufferInfo = MediaCodec.BufferInfo()
             var endOfStream = false
-            while (!endOfStream) {
+            val audioInBuffer = ByteBuffer.allocate(4096)
+            var audioTimestamp = 0L
+            while (!endOfStream && !stopRequested.get()) {
                 val outIndex = c.dequeueOutputBuffer(bufferInfo, 10_000)
                 if (outIndex >= 0) {
                     val encodedData = c.getOutputBuffer(outIndex)
                     if (encodedData != null) {
-                        mediaMuxer?.writeSampleData(trackIndex, encodedData, bufferInfo)
+                        mediaMuxer?.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
                     }
                     c.releaseOutputBuffer(outIndex, true)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         endOfStream = true
+                    }
+                }
+
+                val audioInIndex = audioEnc.dequeueInputBuffer(10_000)
+                if (audioInIndex >= 0) {
+                    val audioBuf = audioEnc.getInputBuffer(audioInIndex)
+                    audioBuf.position(0)
+                    val read = record.read(audioBuf, 0, audioBuf.capacity)
+                    if (read > 0) {
+                        audioBufferInfo.offset = 0
+                        audioBufferInfo.size = read
+                        audioEnc.queueInputBuffer(audioInIndex, 0, 0, audioTimestamp, audioBuf)
+                        audioTimestamp += read.toLong()
+                    }
+                }
+
+                val audioOutIndex = audioEnc.dequeueOutputBuffer(audioBufferInfo, 10_000)
+                if (audioOutIndex >= 0) {
+                    val audioEncoded = audioEnc.getOutputBuffer(audioOutIndex)
+                    if (audioEncoded != null) {
+                        audioEnc.releaseOutputBuffer(audioOutIndex, true)
+                        mediaMuxer?.writeSampleData(audioTrackIndex, audioEncoded, audioBufferInfo)
                     }
                 }
             }
@@ -150,6 +212,13 @@ class MainActivity : Activity() {
             captureSurface?.release()
             this.captureSurface = null
             this.mediaCodec = null
+
+            audioEnc.stop()
+            audioEnc.release()
+            record.stop()
+            record.release()
+            this.audioCodec = null
+            this.audioRecord = null
 
             virtualDisplay?.release()
             virtualDisplay = null
@@ -165,6 +234,15 @@ class MainActivity : Activity() {
         stopRequested.set(true)
 
         mediaCodec?.signalEndOfInputStream()
+        audioCodec?.signalEndOfInputStream()
+        audioRecord?.stop()
+        audioRecord?.release()
+        audioCodec?.stop()
+        audioCodec?.release()
+        mediaCodec = null
+        audioCodec = null
+        audioRecord = null
+
         mediaProjection?.stop()
         mediaProjection = null
     }

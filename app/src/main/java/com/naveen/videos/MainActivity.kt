@@ -11,7 +11,7 @@ import android.media.projection.MediaProjectionInfo
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.os.Handler
-import android.display.DisplayManager
+import android.hardware.display.DisplayManager
 import android.view.Display
 import android.view.Surface
 import android.view.WindowManager

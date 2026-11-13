@@ -88,7 +88,7 @@ class MainActivity : Activity() {
 
         val displayMetrics = resources.displayMetrics
         val width = displayMetrics.widthPixels.coerceAtLeast(320)
-        val height = displayMetrics.heightPixels.coerceAtLeast(240))
+        val height = displayMetrics.heightPixels.coerceAtLeast(240)
 
         val videoFormat = MediaFormat.createVideoFormat("video/avc", width, height).apply {
             setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)

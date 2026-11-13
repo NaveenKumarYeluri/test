@@ -11,9 +11,8 @@ import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.os.Handler
 import android.hardware.display.DisplayManager
-import android.view.Display
+import android.hardware.display.VirtualDisplay
 import android.view.Surface
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 import java.io.File
@@ -24,7 +23,7 @@ class MainActivity : Activity() {
     private val captureRequestCode = 1001
 
     private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: Display? = null
+    private var virtualDisplay: VirtualDisplay? = null
     private var codec: MediaCodec? = null
     private var muxer: MediaMuxer? = null
     private var outputSurface: Surface? = null
@@ -39,12 +38,14 @@ class MainActivity : Activity() {
 
     private val captureCallback = object : MediaProjection.Callback() {
         override fun onCapturedContentResize(width: Int, height: Int) {
+            // MVP: ignore region resize
         }
 
         override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+            // MVP: ignore region visibility change
         }
 
-        override fun onStop(): Unit {
+        override fun onStop() {
             stopCapture()
         }
     }
@@ -74,7 +75,7 @@ class MainActivity : Activity() {
             val intent = data ?: return@onActivityResult
             mediaProjection = projectionManager.getMediaProjection(resultCode, intent)
             mediaProjection?.registerCallback(captureCallback, handler)
-            statusText.text = "Preparing capture…"
+            startCaptureSession()
         } else {
             statusText.text = "Capture not started"
         }
@@ -96,27 +97,26 @@ class MainActivity : Activity() {
         }
 
         val codec = MediaCodec.createEncoderByType("video/avc")
-        val surface = codec.createSurface()
-        codec.configure(videoFormat, surface, null, 0)
+        codec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val surface = codec.createInputSurface()
         codec.start()
 
         val muxer = MediaMuxer(
             File(getExternalFilesDir(null), "capture_${System.currentTimeMillis()}.mp4").absolutePath,
-            MediaMuxer.OutputFormat.MUX_PER_FILE
+            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
         )
-        muxer.addTrack(videoFormat)
+        val trackIndex = muxer.addTrack(videoFormat)
         muxer.start()
 
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        virtualDisplay = windowManager.createVirtualDisplay(
+        virtualDisplay = projection.createVirtualDisplay(
             "VideosCapture",
             width,
             height,
             displayMetrics.densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
             surface,
-            handler,
-            null
+            null,
+            handler
         )
 
         this.codec = codec
@@ -128,9 +128,13 @@ class MainActivity : Activity() {
             val c = codec ?: return@Thread
             val bufferInfo = MediaCodec.BufferInfo()
             var endOfStream = false
-            while (!endOfStream && !stopRequested.get()) {
+            while (!endOfStream) {
                 val outIndex = c.dequeueOutputBuffer(bufferInfo, 10_000)
                 if (outIndex >= 0) {
+                    val encodedData = c.getOutputBuffer(outIndex)
+                    if (encodedData != null) {
+                        muxer?.writeSampleData(trackIndex, encodedData, bufferInfo)
+                    }
                     c.releaseOutputBuffer(outIndex, true)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         endOfStream = true
@@ -142,13 +146,15 @@ class MainActivity : Activity() {
             c.release()
             muxer?.stop()
             muxer?.release()
+            muxer = null
             outputSurface?.release()
+            outputSurface = null
             codec = null
 
             virtualDisplay?.release()
             virtualDisplay = null
 
-            mediaProjection?.stop()
+            projection.stop()
             mediaProjection = null
         }.start()
     }

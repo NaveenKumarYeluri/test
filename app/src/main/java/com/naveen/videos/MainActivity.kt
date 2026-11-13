@@ -40,11 +40,9 @@ class MainActivity : Activity() {
 
     private val captureCallback = object : MediaProjection.Callback() {
         override fun onCapturedContentResize(width: Int, height: Int) {
-            // MVP: ignore region resize
         }
 
         override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
-            // MVP: ignore region visibility change
         }
 
         override fun onStop(): Unit {
@@ -91,7 +89,7 @@ class MainActivity : Activity() {
 
         val displayMetrics = resources.displayMetrics
         val width = displayMetrics.widthPixels.coerceAtLeast(320)
-        val height = displayMetrics.heightPixels.coerceAtLeast(240)
+        val height = displayMetrics.heightPixels.coerceAtLeast(240))
 
         val videoFormat = MediaFormat.createVideoFormat("video/avc", width, height).apply {
             setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)

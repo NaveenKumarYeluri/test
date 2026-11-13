@@ -118,7 +118,7 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 val audioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build()
-                val captureConfig = AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
+                val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
                     .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                     .build()
                 val record = AudioRecord.Builder().setAudioPlaybackCaptureConfig(captureConfig).build()
@@ -129,7 +129,7 @@ class MainActivity : Activity() {
                     setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
                     setInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
                 }
-                val audioEncoder = MediaCodec.createAudioEncoder(MediaFormat.MIMETYPE_AUDIO_AAC, 44_100, 2)
+                val audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
                 audioEncoder.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 audioEncoder.start()
                 audioCodec = audioEncoder
@@ -183,7 +183,7 @@ class MainActivity : Activity() {
 
                 val audioInIndex = audioEnc.dequeueInputBuffer(10_000)
                 if (audioInIndex >= 0) {
-                    val audioBuf = audioEnc.getInputBuffer(audioInIndex)
+                    val audioBuf = audioEnc.getInputBuffer(audioInIndex) ?: return@Thread
                     audioBuf.position(0)
                     val read = record.read(audioBuf, 0, audioBuf.capacity)
                     if (read > 0) {

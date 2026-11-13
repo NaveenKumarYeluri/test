@@ -27,12 +27,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+        with:
+          packages: "platforms;android-34"
 
       - name: Install Android SDK components
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null
+        run: sdkmanager "build-tools;34.0.0" "platform-tools"
 
       - name: Assemble Debug APK
         run: gradle assembleDebug

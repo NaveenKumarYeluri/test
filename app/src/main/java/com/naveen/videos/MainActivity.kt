@@ -40,11 +40,11 @@ class MainActivity : Activity() {
 
     private val captureCallback = object : MediaProjection.Callback() {
         override fun onCapturedContentResize(width: Int, height: Int) {
-            // MVP: captured region resize handled later
+            // MVP: ignore region resize
         }
 
         override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
-            // MVP: captured region visibility handled later
+            // MVP: ignore region visibility change
         }
 
         override fun onStop(): Unit {
@@ -134,7 +134,7 @@ class MainActivity : Activity() {
             while (!endOfStream && !stopRequested.get()) {
                 val outIndex = c.dequeueOutputBuffer(bufferInfo, 10_000)
                 if (outIndex >= 0) {
-                    c.releaseOutputBuffer(outIndex, true, bufferInfo)
+                    c.releaseOutputBuffer(outIndex, true)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         endOfStream = true
                     }

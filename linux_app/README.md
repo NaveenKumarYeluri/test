@@ -12,6 +12,7 @@ python3 server.py --host 0.0.0.0 --port 8000
 
 - `GET /health` -> `{"status": "ok"}` — liveness probe
 - `POST /upload?name=<filename>` -> raw body is saved and played
+- `POST /play?name=<filename>` -> play a previously saved capture
 - `POST /stop` -> stop current playback
 
 ## Notes

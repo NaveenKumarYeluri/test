@@ -78,6 +78,16 @@ class CaptureHandler(BaseHTTPRequestHandler):
             stop_current()
             self._send_json(200, {"status": "stopped"})
             return
+        if parsed.path == "/play":
+            name = sanitize_name((parse_qs(parsed.query).get("name") or [""])[0])
+            CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+            target = CAPTURE_DIR / name
+            if not target.is_file():
+                self._send_json(404, {"status": "not_found", "path": str(target)})
+                return
+            play(target)
+            self._send_json(200, {"status": "ok", "path": str(target)})
+            return
         if parsed.path != "/upload":
             self._send_json(404, {"status": "not_found"})
             return

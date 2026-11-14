@@ -14,6 +14,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
+import android.os.Looper
 import android.os.Build
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -23,7 +24,6 @@ import android.widget.TextView
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : Activity() {
@@ -47,7 +47,7 @@ class MainActivity : Activity() {
     private lateinit var captureButton: Button
     private lateinit var statusText: TextView
 
-    private val handler = Handler()
+    private val handler = Handler(Looper.getMainLooper())
 
     private companion object {
         private const val LINUX_SERVER_HOST = "192.168.1.100" // TODO: IP of the Linux host machine
@@ -128,7 +128,6 @@ class MainActivity : Activity() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                val audioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build()
                 val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
                     .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                     .build()
@@ -171,20 +170,19 @@ class MainActivity : Activity() {
         statusText.text = "Capturing…"
 
         Thread {
-            val c = mediaCodec ?: return@Thread
+            val c = mediaCodec
             val audioEnc = audioCodec ?: return@Thread
             val record = audioRecord ?: return@Thread
             val bufferInfo = MediaCodec.BufferInfo()
             val audioBufferInfo = MediaCodec.BufferInfo()
             var endOfStream = false
-            val audioInBuffer = ByteBuffer.allocate(4096)
             var audioTimestamp = 0L
             while (!endOfStream && !stopRequested.get()) {
                 val outIndex = c.dequeueOutputBuffer(bufferInfo, 10_000)
                 if (outIndex >= 0) {
                     val encodedData = c.getOutputBuffer(outIndex)
                     if (encodedData != null) {
-                        mediaMuxer?.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
+                        mediaMuxer.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
                     }
                     c.releaseOutputBuffer(outIndex, true)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
@@ -210,17 +208,17 @@ class MainActivity : Activity() {
                     val audioEncoded = audioEnc.getOutputBuffer(audioOutIndex)
                     if (audioEncoded != null) {
                         audioEnc.releaseOutputBuffer(audioOutIndex, true)
-                        mediaMuxer?.writeSampleData(audioTrackIndex, audioEncoded, audioBufferInfo)
+                        mediaMuxer.writeSampleData(audioTrackIndex, audioEncoded, audioBufferInfo)
                     }
                 }
             }
 
             c.stop()
             c.release()
-            mediaMuxer?.stop()
-            mediaMuxer?.release()
+            mediaMuxer.stop()
+            mediaMuxer.release()
             this.mediaMuxer = null
-            captureSurface?.release()
+            captureSurface.release()
             this.captureSurface = null
             this.mediaCodec = null
 

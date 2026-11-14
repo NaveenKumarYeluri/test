@@ -11,6 +11,7 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Build
@@ -20,6 +21,8 @@ import android.view.Surface
 import android.widget.Button
 import android.widget.TextView
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -37,12 +40,19 @@ class MainActivity : Activity() {
     private var audioTrackIndex = -1
     private var isCapturing = false
 
+    private var captureFile: File? = null
+
     private val stopRequested = AtomicBoolean(false)
 
     private lateinit var captureButton: Button
     private lateinit var statusText: TextView
 
     private val handler = Handler()
+
+    private companion object {
+        private const val LINUX_SERVER_HOST = "192.168.1.100" // TODO: IP of the Linux host machine
+        private const val LINUX_SERVER_PORT = 8000
+    }
 
     private val captureCallback = object : MediaProjection.Callback() {
         override fun onCapturedContentResize(width: Int, height: Int) {
@@ -109,8 +119,9 @@ class MainActivity : Activity() {
         val captureSurface = mediaCodec.createInputSurface()
         mediaCodec.start()
 
+        captureFile = File(getExternalFilesDir(null), "capture_${System.currentTimeMillis()}.mp4")
         val mediaMuxer = MediaMuxer(
-            File(getExternalFilesDir(null), "capture_${System.currentTimeMillis()}.mp4").absolutePath,
+            captureFile.absolutePath,
             MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
         )
         val videoTrackIndex = mediaMuxer.addTrack(videoFormat)
@@ -225,7 +236,41 @@ class MainActivity : Activity() {
 
             projection.stop()
             mediaProjection = null
+
+            captureFile?.let { file ->
+                uploadCaptureFile(file)
+            }
+            this.captureFile = null
         }.start()
+    }
+
+    private fun uploadCaptureFile(file: File) {
+        fun setStatus(message: String) {
+            runOnUiThread { statusText.text = message }
+        }
+        try {
+            val url = "http://${LINUX_SERVER_HOST}:${LINUX_SERVER_PORT}/upload?name=${Uri.encode(file.name)}"
+            val connection = URL(url).openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 60_000
+            connection.setRequestProperty("Content-Type", "application/octet-stream")
+            connection.outputStream.use { output ->
+                file.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            }
+            val responseCode = connection.responseCode
+            connection.disconnect()
+            if (responseCode !in 200..299) {
+                setStatus("Upload failed (HTTP $responseCode)")
+            } else {
+                setStatus("Capture sent to Linux")
+            }
+        } catch (t: Throwable) {
+            setStatus("Upload failed: ${t.message ?: t.javaClass.simpleName}")
+        }
     }
 
     private fun stopCapture() {

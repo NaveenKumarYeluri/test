@@ -121,7 +121,7 @@ class MainActivity : Activity() {
 
         captureFile = File(getExternalFilesDir(null), "capture_${System.currentTimeMillis()}.mp4")
         val mediaMuxer = MediaMuxer(
-            captureFile.absolutePath,
+            captureFile!!.absolutePath,
             MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
         )
         val videoTrackIndex = mediaMuxer.addTrack(videoFormat)

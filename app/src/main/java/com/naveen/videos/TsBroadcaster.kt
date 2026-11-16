@@ -172,6 +172,20 @@ class TsBroadcaster(hasAudio: Boolean) {
         }
     }
 
+    /**
+     * Drops the cached GOP, e.g. after the encoder changed resolution.  New
+     * clients wait for the next keyframe so they never receive a partially
+     * cached old-resolution GOP.
+     */
+    fun resetCache() {
+        synchronized(lock) {
+            if (closed) return
+            gop.clear()
+            gopBytes = 0
+            gopHasKeyframe = false
+        }
+    }
+
     fun close() {
         val remaining = synchronized(lock) {
             if (closed) return

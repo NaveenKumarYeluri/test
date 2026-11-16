@@ -3,6 +3,7 @@ package com.naveen.videos
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Point
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.AudioAttributes
@@ -18,6 +19,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Display
 import android.view.Surface
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -70,6 +72,38 @@ class LiveCapturePipeline(
     @Volatile
     private var keyframeRequested = false
 
+    /**
+     * Set by the display listener when the phone rotates.  The video thread
+     * consumes it and rebuilds the encoder/display at the new size, because a
+     * VirtualDisplay keeps its original orientation and would letterbox the
+     * rotated screen into a tiny strip otherwise.
+     */
+    @Volatile
+    private var reconfigureRequested = false
+    @Volatile
+    private var displayWidth = 0
+    @Volatile
+    private var displayHeight = 0
+
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {
+        }
+
+        override fun onDisplayRemoved(displayId: Int) {
+        }
+
+        override fun onDisplayChanged(displayId: Int) {
+            if (!running.get() || displayId != Display.DEFAULT_DISPLAY) return
+            val (width, height) = displaySize()
+            if (width != displayWidth || height != displayHeight) {
+                displayWidth = width
+                displayHeight = height
+                LiveState.trace("rotation:${width}x$height")
+                reconfigureRequested = true
+            }
+        }
+    }
+
     private val isUsb: Boolean
         get() = transport == LiveState.TRANSPORT_USB
 
@@ -93,6 +127,10 @@ class LiveCapturePipeline(
                 startWifiTransport()
             }
             projection.registerCallback(callback, Handler(Looper.getMainLooper()))
+            val (initialWidth, initialHeight) = displaySize()
+            displayWidth = initialWidth
+            displayHeight = initialHeight
+            registerDisplayListener()
             val hasAudio = setupAudio()
             if (isUsb) {
                 val broadcaster = TsBroadcaster(hasAudio).apply {
@@ -108,7 +146,7 @@ class LiveCapturePipeline(
                     udp, address, audioPort, (Math.random() * Int.MAX_VALUE).toInt(), 44100
                 )
             }
-            setupVideo()
+            setupVideo(initialWidth, initialHeight)
             startThreads()
             if (isUsb) {
                 LiveState.state = LiveState.STREAMING
@@ -154,6 +192,49 @@ class LiveCapturePipeline(
         }
     }
 
+    /**
+     * Size of the physical display in its current rotation, capped to a 1440 px
+     * long edge and aligned to 8 pixels for the encoder.
+     */
+    private fun displaySize(): Pair<Int, Int> {
+        val point = Point()
+        try {
+            val manager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            manager.getDisplay(Display.DEFAULT_DISPLAY)?.getRealSize(point)
+        } catch (_: Throwable) {
+        }
+        var width = if (point.x > 0) point.x else context.resources.displayMetrics.widthPixels
+        var height = if (point.y > 0) point.y else context.resources.displayMetrics.heightPixels
+        val maxSize = 1440
+        if (width >= height && width > maxSize) {
+            height = height * maxSize / width
+            width = maxSize
+        } else if (height > width && height > maxSize) {
+            width = width * maxSize / height
+            height = maxSize
+        }
+        width = (width / 8) * 8
+        height = (height / 8) * 8
+        return width to height
+    }
+
+    private fun registerDisplayListener() {
+        try {
+            val manager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            manager.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
+        } catch (t: Throwable) {
+            LiveState.trace("displayListener:${t.javaClass.simpleName}")
+        }
+    }
+
+    private fun unregisterDisplayListener() {
+        try {
+            val manager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            manager.unregisterDisplayListener(displayListener)
+        } catch (_: Throwable) {
+        }
+    }
+
     fun stop() {
         finish(null)
     }
@@ -175,28 +256,16 @@ class LiveCapturePipeline(
         }
     }
 
-    private fun setupVideo() {
+    private fun setupVideo(width: Int, height: Int) {
         val metrics = context.resources.displayMetrics
-        var width = metrics.widthPixels
-        var height = metrics.heightPixels
-        val maxSize = 1440
-        if (width >= height && width > maxSize) {
-            height = height * maxSize / width
-            width = maxSize
-        } else if (height > width && height > maxSize) {
-            width = width * maxSize / height
-            height = maxSize
-        }
-        width = (width / 8) * 8
-        height = (height / 8) * 8
         if (width < 16 || height < 16) {
-            throw IllegalStateException("Invalid display size ${metrics.widthPixels}x${metrics.heightPixels}")
+            throw IllegalStateException("Invalid display size ${width}x$height")
         }
         LiveState.trace("videoSetup:${width}x$height")
 
         val candidates = ArrayList<Pair<Int, Int>>()
         candidates.add(width to height)
-        candidates.add(height to width)
+        // Fallback for encoders which reject the native size.
         candidates.add(640 to 480)
         var lastError: Throwable? = null
         for ((candidateWidth, candidateHeight) in candidates) {
@@ -326,12 +395,7 @@ class LiveCapturePipeline(
     }
 
     private fun startThreads() {
-        videoThread = Thread {
-            videoLoop()
-        }.apply {
-            name = "videos-video"
-            start()
-        }
+        startVideoThread()
         if (audioCodec != null && audioRecord != null) {
             audioThread = Thread {
                 audioLoop()
@@ -339,6 +403,46 @@ class LiveCapturePipeline(
                 name = "videos-audio"
                 start()
             }
+        }
+    }
+
+    private fun startVideoThread() {
+        videoThread = Thread {
+            videoLoop()
+        }.apply {
+            name = "videos-video"
+            start()
+        }
+    }
+
+    /**
+     * Runs on the video thread after a rotation.  The encoder and virtual
+     * display are tied to one surface size, so both are recreated at the new
+     * orientation and a fresh video thread takes over.
+     */
+    private fun reconfigureVideo() {
+        LiveState.trace("reconfigureVideo")
+        if (LiveState.recording) {
+            try {
+                recorder.stop()
+            } catch (_: Throwable) {
+            }
+            LiveState.recording = false
+            LiveState.message = "Recording stopped (screen rotated)"
+        }
+        releaseVideo()
+        try {
+            val (width, height) = displaySize()
+            displayWidth = width
+            displayHeight = height
+            if (!isUsb) LiveState.sdp = null
+            setupVideo(width, height)
+            tsBroadcaster?.resetCache()
+            requestKeyFrame()
+            videoThread = null
+            startVideoThread()
+        } catch (t: Throwable) {
+            fail(t)
         }
     }
 
@@ -390,6 +494,7 @@ class LiveCapturePipeline(
         if (!finished.compareAndSet(false, true)) return
         LiveState.trace("pipe.finish:$error")
         running.set(false)
+        unregisterDisplayListener()
         try {
             virtualDisplay?.release()
         } catch (_: Throwable) {
@@ -451,6 +556,11 @@ class LiveCapturePipeline(
         val info = MediaCodec.BufferInfo()
         var lastKeyRequest = 0L
         while (running.get()) {
+            if (reconfigureRequested) {
+                reconfigureRequested = false
+                reconfigureVideo()
+                return
+            }
             try {
                 val now = SystemClock.elapsedRealtime()
                 if (keyframeRequested || now - lastKeyRequest > 2000) {
@@ -636,6 +746,11 @@ class LiveCapturePipeline(
     }
 
     private fun releaseVideo() {
+        try {
+            virtualDisplay?.release()
+        } catch (_: Throwable) {
+        }
+        virtualDisplay = null
         try {
             videoCodec?.stop()
         } catch (_: Throwable) {

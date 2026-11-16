@@ -88,6 +88,10 @@ Useful options:
 * **Wi-Fi:** the phone sends H.264 RTP to the laptop; the app fetches
   `/api/live/sdp`, writes it to `~/.cache/videos/live.sdp` and opens it with
   libVLC using the FFmpeg SDP demux.
+* The mirror follows the phone's rotation. Turning the phone rebuilds the
+  encoder at the new orientation, so landscape video fills the frame instead
+  of appearing letterboxed inside a portrait strip. A live recording stops if
+  the screen rotates.
 
 Snapshots are saved to `~/Pictures/Videos`; recordings of library playback to
 `~/.local/share/videos/recordings`.

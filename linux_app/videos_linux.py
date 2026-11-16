@@ -150,7 +150,7 @@ class VideosWindow(Gtk.Window):
         self.recording_live = False
         self.loop_enabled = False
         self.shuffle_enabled = False
-        self.fullscreen = False
+        self.is_fullscreen = False
         self.seeking = False
         self.volume = int(self.settings.get("volume", 100))
         self.muted = False
@@ -1520,16 +1520,16 @@ class VideosWindow(Gtk.Window):
 
     # -------------------------------------------------------------- fullscreen
     def on_toggle_fullscreen(self):
-        if self.fullscreen:
+        if self.is_fullscreen:
             self.unfullscreen()
         else:
             self.fullscreen()
 
     def on_window_state(self, widget, event):
         is_full = bool(event.new_window_state & Gdk.WindowState.FULLSCREEN)
-        if is_full == self.fullscreen:
+        if is_full == self.is_fullscreen:
             return
-        self.fullscreen = is_full
+        self.is_fullscreen = is_full
         for widget in (
             self.menubar,
             self.connection_bar,
@@ -1705,7 +1705,7 @@ class VideosWindow(Gtk.Window):
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
         name = Gdk.keyval_name(key) or ""
 
-        if key == Gdk.KEY_Escape and self.fullscreen:
+        if key == Gdk.KEY_Escape and self.is_fullscreen:
             self.unfullscreen()
             return True
         if key == Gdk.KEY_space:

@@ -42,3 +42,43 @@ jobs:
           name: debug-apk
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 7
+
+  linux-player:
+    name: Linux Player Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Syntax check
+        run: >-
+          python3 -m py_compile
+          linux_app/vlc.py
+          linux_app/phone_client.py
+          linux_app/videos_linux.py
+
+      - name: Client helper checks
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "linux_app")
+          from phone_client import PhoneClient, format_duration, format_size, parse_host
+
+          assert format_duration(0) == "0:00"
+          assert format_duration(65_321) == "1:05"
+          assert format_duration(3_723_000) == "1:02:03"
+          assert format_size(512) == "512 B"
+          assert format_size(1536) == "1.5 KB"
+          assert parse_host("192.168.1.20") == ("192.168.1.20", 8080)
+          assert parse_host("http://127.0.0.1:18080") == ("127.0.0.1", 18080)
+          client = PhoneClient("127.0.0.1", 18080)
+          assert client.is_local
+          assert client.live_stream_url == "http://127.0.0.1:18080/api/live/stream.ts"
+          assert not PhoneClient("192.168.1.20").is_local
+          print("client helpers OK")
+          PY

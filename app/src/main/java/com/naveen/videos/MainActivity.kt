@@ -1,297 +1,358 @@
 package com.naveen.videos
 
+import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
-import android.media.AudioPlaybackCaptureConfiguration
-import android.media.AudioRecord
-import android.media.MediaCodec
-import android.media.MediaFormat
-import android.media.MediaMuxer
-import android.media.projection.MediaProjection
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
-import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.Build
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.view.Surface
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
-import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.atomic.AtomicBoolean
+import android.widget.Toast
 
 class MainActivity : Activity() {
 
-    private val captureRequestCode = 1001
+    companion object {
+        const val ACTION_REQUEST_LIVE = "com.naveen.videos.action.REQUEST_LIVE"
+        const val EXTRA_CLIENT_IP = "client_ip"
+        const val EXTRA_VIDEO_PORT = "video_port"
+        const val EXTRA_AUDIO_PORT = "audio_port"
+        const val EXTRA_BITRATE = "bitrate"
+        const val EXTRA_TRANSPORT = "transport"
 
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var mediaCodec: MediaCodec? = null
-    private var mediaMuxer: MediaMuxer? = null
-    private var captureSurface: Surface? = null
-    private var audioRecord: AudioRecord? = null
-    private var audioCodec: MediaCodec? = null
-    private var audioTrackIndex = -1
-    private var isCapturing = false
+        private const val REQUEST_PROJECTION = 1001
+        private const val REQUEST_PERMISSIONS = 1002
+    }
 
-    private var captureFile: File? = null
-
-    private val stopRequested = AtomicBoolean(false)
-
-    private lateinit var captureButton: Button
-    private lateinit var statusText: TextView
+    private lateinit var serverStatus: TextView
+    private lateinit var serverUrl: TextView
+    private lateinit var serverButton: Button
+    private lateinit var copyUrlButton: Button
+    private lateinit var liveButton: Button
+    private lateinit var liveStatus: TextView
+    private lateinit var permissionsButton: Button
+    private lateinit var deviceName: TextView
 
     private val handler = Handler(Looper.getMainLooper())
+    private var pendingBitrate = 8_000_000
+    /**
+     * The request which owns the currently displayed screen-capture consent
+     * dialog.  Global LiveState can be reset by a pipeline winding down, so the
+     * callback must not read the transport from it.
+     */
+    private var pendingLive: LiveRequestParams? = null
+    private val preferences by lazy { getSharedPreferences("videos", MODE_PRIVATE) }
 
-    private companion object {
-        private const val LINUX_SERVER_HOST = "192.168.1.100" // TODO: IP of the Linux host machine
-        private const val LINUX_SERVER_PORT = 8000
+    private data class LiveRequestParams(
+        val ip: String,
+        val videoPort: Int,
+        val audioPort: Int,
+        val bitrate: Int,
+        val transport: String
+    )
+
+    private val poller = object : Runnable {
+        override fun run() {
+            updateUi()
+            handler.postDelayed(this, 1000)
+        }
     }
 
-    private val captureCallback = object : MediaProjection.Callback() {
-        override fun onCapturedContentResize(width: Int, height: Int) {
-            // MVP: ignore region resize
-        }
-
-        override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
-            // MVP: ignore region visibility change
-        }
-
-        override fun onStop() {
-            stopCapture()
-        }
-    }
-
-    protected override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        LiveState.trace("onCreate")
 
-        captureButton = findViewById(R.id.capture_button)
-        statusText = findViewById(R.id.status_text)
+        serverStatus = findViewById(R.id.server_status)
+        serverUrl = findViewById(R.id.server_url)
+        serverButton = findViewById(R.id.server_button)
+        copyUrlButton = findViewById(R.id.copy_url_button)
+        liveButton = findViewById(R.id.live_button)
+        liveStatus = findViewById(R.id.live_status)
+        permissionsButton = findViewById(R.id.permissions_button)
+        deviceName = findViewById(R.id.device_name)
 
-        captureButton.setOnClickListener { startCapture() }
+        deviceName.text = "${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}"
+
+        serverButton.setOnClickListener { toggleServer() }
+        copyUrlButton.setOnClickListener { copyUrl() }
+        liveButton.setOnClickListener { toggleLive() }
+        permissionsButton.setOnClickListener { requestAppPermissions() }
+
+        PhoneServerService.start(this)
+        requestAppPermissions()
+        handleIntent(intent)
     }
 
-    private fun startCapture() {
-        if (isCapturing) return
-        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        startActivityForResult(
-            projectionManager.createScreenCaptureIntent(),
-            captureRequestCode
-        )
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        LiveState.trace("onNewIntent:${intent?.action}")
+        if (intent != null) {
+            setIntent(intent)
+            handleIntent(intent)
+        }
     }
 
-    protected override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (requestCode == captureRequestCode && resultCode == RESULT_OK) {
-            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val intent = data ?: return@onActivityResult
-            mediaProjection = projectionManager.getMediaProjection(resultCode, intent)
-            mediaProjection?.registerCallback(captureCallback, handler)
-            startCaptureSession()
+    override fun onResume() {
+        super.onResume()
+        handler.removeCallbacks(poller)
+        handler.post(poller)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacks(poller)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacks(poller)
+    }
+
+    private fun toggleServer() {
+        if (PhoneServerService.isRunning) {
+            PhoneServerService.stop(this)
         } else {
-            statusText.text = "Capture not started"
+            PhoneServerService.start(this)
         }
+        handler.postDelayed({ updateUi() }, 500)
     }
 
-    private fun startCaptureSession() {
-        val projection = mediaProjection ?: return
-        if (isCapturing) return
-        isCapturing = true
-        stopRequested.set(false)
-
-        val displayMetrics = resources.displayMetrics
-        val width = displayMetrics.widthPixels.coerceAtLeast(320)
-        val height = displayMetrics.heightPixels.coerceAtLeast(240)
-
-        val videoFormat = MediaFormat.createVideoFormat("video/avc", width, height).apply {
-            setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
-            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-        }
-
-        val mediaCodec = MediaCodec.createEncoderByType("video/avc")
-        mediaCodec.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        val captureSurface = mediaCodec.createInputSurface()
-        mediaCodec.start()
-
-        captureFile = File(getExternalFilesDir(null), "capture_${System.currentTimeMillis()}.mp4")
-        val mediaMuxer = MediaMuxer(
-            captureFile!!.absolutePath,
-            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+    private fun copyUrl() {
+        val ip = NetworkUtils.localIpv4() ?: return
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(
+            ClipData.newPlainText("Videos URL", "http://$ip:${PhoneServerService.PORT}")
         )
-        val videoTrackIndex = mediaMuxer.addTrack(videoFormat)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
-                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                    .build()
-                val record = AudioRecord.Builder().setAudioPlaybackCaptureConfig(captureConfig).build()
-                record.startRecording()
-                audioRecord = record
-
-                val audioFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44_100, 2).apply {
-                    setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
-                    setInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
-                }
-                val audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-                audioEncoder.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                audioEncoder.start()
-                audioCodec = audioEncoder
-                audioTrackIndex = mediaMuxer.addTrack(audioFormat)
-            } catch (t: Throwable) {
-                audioRecord = null
-                audioCodec = null
-                audioTrackIndex = -1
-            }
-        }
-
-        mediaMuxer.start()
-
-        virtualDisplay = projection.createVirtualDisplay(
-            "VideosCapture",
-            width,
-            height,
-            displayMetrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            captureSurface,
-            null,
-            handler
-        )
-
-        this.mediaCodec = mediaCodec
-        this.mediaMuxer = mediaMuxer
-        this.captureSurface = captureSurface
-        statusText.text = "Capturing…"
-
-        Thread {
-            val c = mediaCodec
-            val audioEnc = audioCodec ?: return@Thread
-            val record = audioRecord ?: return@Thread
-            val bufferInfo = MediaCodec.BufferInfo()
-            val audioBufferInfo = MediaCodec.BufferInfo()
-            var endOfStream = false
-            var audioTimestamp = 0L
-            while (!endOfStream && !stopRequested.get()) {
-                val outIndex = c.dequeueOutputBuffer(bufferInfo, 10_000)
-                if (outIndex >= 0) {
-                    val encodedData = c.getOutputBuffer(outIndex)
-                    if (encodedData != null) {
-                        mediaMuxer.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
-                    }
-                    c.releaseOutputBuffer(outIndex, true)
-                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                        endOfStream = true
-                    }
-                }
-
-                val audioInIndex = audioEnc.dequeueInputBuffer(10_000)
-                if (audioInIndex >= 0) {
-                    val audioBuf = audioEnc.getInputBuffer(audioInIndex) ?: return@Thread
-                    audioBuf.position(0)
-                    val read = record.read(audioBuf, 0, audioBuf.capacity())
-                    if (read > 0) {
-                        audioBufferInfo.offset = 0
-                        audioBufferInfo.size = read
-                        audioEnc.queueInputBuffer(audioInIndex, 0, read, audioTimestamp, 0)
-                        audioTimestamp += read.toLong()
-                    }
-                }
-
-                val audioOutIndex = audioEnc.dequeueOutputBuffer(audioBufferInfo, 10_000)
-                if (audioOutIndex >= 0) {
-                    val audioEncoded = audioEnc.getOutputBuffer(audioOutIndex)
-                    if (audioEncoded != null) {
-                        audioEnc.releaseOutputBuffer(audioOutIndex, true)
-                        mediaMuxer.writeSampleData(audioTrackIndex, audioEncoded, audioBufferInfo)
-                    }
-                }
-            }
-
-            c.stop()
-            c.release()
-            mediaMuxer.stop()
-            mediaMuxer.release()
-            this.mediaMuxer = null
-            captureSurface.release()
-            this.captureSurface = null
-            this.mediaCodec = null
-
-            audioEnc.stop()
-            audioEnc.release()
-            record.stop()
-            record.release()
-            this.audioCodec = null
-            this.audioRecord = null
-
-            virtualDisplay?.release()
-            virtualDisplay = null
-
-            projection.stop()
-            mediaProjection = null
-
-            captureFile?.let { file ->
-                uploadCaptureFile(file)
-            }
-            this.captureFile = null
-        }.start()
+        Toast.makeText(this, "URL copied", Toast.LENGTH_SHORT).show()
     }
 
-    private fun uploadCaptureFile(file: File) {
-        fun setStatus(message: String) {
-            runOnUiThread { statusText.text = message }
+    private fun toggleLive() {
+        if (LiveState.isActive) {
+            LiveState.state = LiveState.STOPPING
+            LiveState.message = "Stopping live mirror…"
+            LiveStreamService.stop(this)
+            updateUi()
+            return
         }
+        AlertDialog.Builder(this)
+            .setTitle("Start live mirror")
+            .setItems(
+                arrayOf("USB cable (recommended)", "Wi-Fi (same network)")
+            ) { _, which ->
+                if (which == 0) {
+                    beginLive("", 5004, 5006, 8_000_000, LiveState.TRANSPORT_USB)
+                } else {
+                    promptWifi()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptWifi() {
+        val input = EditText(this).apply {
+            hint = "Linux IP address"
+            setText(preferences.getString("client_ip", LiveState.clientIp ?: ""))
+            setSingleLine()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Wi-Fi live mirror")
+            .setMessage("Enter the Linux machine's IP address. Its Videos app should be open.")
+            .setView(input)
+            .setPositiveButton("Start") { _, _ ->
+                val ip = input.text.toString().trim()
+                if (ip.isEmpty()) {
+                    Toast.makeText(this, "Enter the Linux IP", Toast.LENGTH_SHORT).show()
+                } else {
+                    preferences.edit().putString("client_ip", ip).apply()
+                    beginLive(ip, 5004, 5006, 8_000_000, LiveState.TRANSPORT_WIFI)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        LiveState.trace("handle:${intent?.action}/${intent?.getStringExtra(EXTRA_CLIENT_IP)}")
+        if (intent?.action != ACTION_REQUEST_LIVE) return
+        val transport = intent.getStringExtra(EXTRA_TRANSPORT)
+            ?: LiveState.TRANSPORT_WIFI
+        val ip = intent.getStringExtra(EXTRA_CLIENT_IP).orEmpty()
+        if (transport != LiveState.TRANSPORT_USB && ip.isBlank()) return
+        val videoPort = intent.getIntExtra(EXTRA_VIDEO_PORT, 5004)
+        val audioPort = intent.getIntExtra(EXTRA_AUDIO_PORT, 5006)
+        pendingBitrate = intent.getIntExtra(EXTRA_BITRATE, 8_000_000)
+        if (ip.isNotBlank()) preferences.edit().putString("client_ip", ip).apply()
+        // A request arriving from the phone server is already in REQUESTING
+        // state; only skip intents once a capture session is really running.
+        if (LiveState.state == LiveState.STREAMING || LiveState.state == LiveState.STOPPING) {
+            return
+        }
+        beginLive(ip, videoPort, audioPort, pendingBitrate, transport)
+    }
+
+    private fun beginLive(
+        ip: String,
+        videoPort: Int,
+        audioPort: Int,
+        bitrate: Int,
+        transport: String
+    ) {
+        val usb = transport == LiveState.TRANSPORT_USB
+        LiveState.trace("beginLive:$transport:$ip:$videoPort/$audioPort")
+        PhoneServerService.dismissApproval(this)
+        LiveState.clientIp = ip.ifBlank { null }
+        LiveState.transport = transport
+        LiveState.videoPort = videoPort
+        LiveState.audioPort = audioPort
+        LiveState.state = LiveState.AWAITING_PERMISSION
+        LiveState.message = if (usb) {
+            "Approve the screen-capture prompt to mirror over USB"
+        } else {
+            "Approve the screen-capture prompt to mirror to $ip"
+        }
+        LiveState.sdp = null
+        pendingBitrate = bitrate
+        pendingLive = LiveRequestParams(ip, videoPort, audioPort, bitrate, transport)
+        if (!PhoneServerService.isRunning) PhoneServerService.start(this)
+        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         try {
-            val url = "http://${LINUX_SERVER_HOST}:${LINUX_SERVER_PORT}/upload?name=${Uri.encode(file.name)}"
-            val connection = URL(url).openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.doOutput = true
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 60_000
-            connection.setRequestProperty("Content-Type", "application/octet-stream")
-            connection.outputStream.use { output ->
-                file.inputStream().use { input ->
-                    input.copyTo(output)
-                }
-            }
-            val responseCode = connection.responseCode
-            connection.disconnect()
-            if (responseCode !in 200..299) {
-                setStatus("Upload failed (HTTP $responseCode)")
+            startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_PROJECTION)
+        } catch (t: Throwable) {
+            LiveState.state = LiveState.ERROR
+            LiveState.message = "Could not request screen capture: ${t.message}"
+            LiveState.trace("startCaptureIntentFailed:${t.javaClass.simpleName}")
+        }
+        updateUi()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        LiveState.trace("result:$requestCode/$resultCode")
+        if (requestCode != REQUEST_PROJECTION) return
+        val request = pendingLive
+        pendingLive = null
+        if (resultCode != RESULT_OK || data == null) {
+            LiveState.state = LiveState.ERROR
+            LiveState.message = "Screen-capture permission was denied"
+            updateUi()
+            return
+        }
+        if (request == null) {
+            LiveState.trace("result:stale")
+            return
+        }
+        val ip = request.ip
+        if (request.transport != LiveState.TRANSPORT_USB && ip.isBlank()) {
+            LiveState.state = LiveState.ERROR
+            LiveState.message = "No Linux client address was provided"
+            updateUi()
+            return
+        }
+        val serviceIntent = Intent(this, LiveStreamService::class.java).apply {
+            action = LiveStreamService.ACTION_START
+            putExtra(LiveStreamService.EXTRA_RESULT_CODE, resultCode)
+            putExtra(LiveStreamService.EXTRA_RESULT_DATA, data)
+            putExtra(EXTRA_CLIENT_IP, ip)
+            putExtra(EXTRA_VIDEO_PORT, request.videoPort)
+            putExtra(EXTRA_AUDIO_PORT, request.audioPort)
+            putExtra(EXTRA_BITRATE, request.bitrate)
+            putExtra(EXTRA_TRANSPORT, request.transport)
+        }
+        LiveState.state = LiveState.REQUESTING
+        LiveState.message = "Starting capture…"
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
             } else {
-                setStatus("Capture sent to Linux")
+                startService(serviceIntent)
             }
         } catch (t: Throwable) {
-            setStatus("Upload failed: ${t.message ?: t.javaClass.simpleName}")
+            LiveState.state = LiveState.ERROR
+            LiveState.message = "Could not start capture: ${t.message}"
         }
+        updateUi()
     }
 
-    private fun stopCapture() {
-        if (!isCapturing) return
-        isCapturing = false
-        stopRequested.set(true)
+    private fun updateUi() {
+        val running = PhoneServerService.isRunning
+        val ip = NetworkUtils.localIpv4()
+        serverStatus.text = if (running) "Running" else "Stopped"
+        serverStatus.setTextColor(getColor(if (running) R.color.success else R.color.text_secondary))
+        serverUrl.text = if (running && ip != null) {
+            "http://$ip:${PhoneServerService.PORT}"
+        } else {
+            "—"
+        }
+        serverButton.text = if (running) "Stop server" else "Start server"
+        copyUrlButton.isEnabled = running && ip != null
 
-        mediaCodec?.signalEndOfInputStream()
-        audioCodec?.signalEndOfInputStream()
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioCodec?.stop()
-        audioCodec?.release()
-        mediaCodec = null
-        audioCodec = null
-        audioRecord = null
-
-        mediaProjection?.stop()
-        mediaProjection = null
+        liveStatus.text = if (LiveState.message.isNotBlank()) {
+            LiveState.message
+        } else {
+            "Idle"
+        }
+        liveStatus.setTextColor(
+            getColor(
+                when (LiveState.state) {
+                    LiveState.STREAMING -> R.color.success
+                    LiveState.ERROR -> R.color.danger
+                    LiveState.IDLE -> R.color.text_secondary
+                    else -> R.color.warning
+                }
+            )
+        )
+        liveButton.text = when {
+            LiveState.isActive && LiveState.isUsb -> "Stop USB mirror"
+            LiveState.isActive -> "Stop Wi-Fi mirror"
+            else -> "Start live mirror"
+        }
+        liveButton.setBackgroundColor(
+            getColor(if (LiveState.isActive) R.color.danger else R.color.primary)
+        )
     }
 
-    protected override fun onDestroy() {
-        super.onDestroy()
-        stopCapture()
+    private fun requestAppPermissions() {
+        val wanted = ArrayList<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                wanted.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            if (checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                wanted.add(Manifest.permission.READ_MEDIA_VIDEO)
+            }
+        } else {
+            if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                wanted.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+            if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                wanted.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            wanted.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (wanted.isNotEmpty()) {
+            requestPermissions(wanted.toTypedArray(), REQUEST_PERMISSIONS)
+        }
     }
 }

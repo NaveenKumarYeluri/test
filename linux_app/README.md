@@ -92,6 +92,12 @@ Useful options:
   encoder at the new orientation, so landscape video fills the frame instead
   of appearing letterboxed inside a portrait strip. A live recording stops if
   the screen rotates.
+* The live stream is decoded in software. The phone emits plain Baseline H.264
+  without constraint flags, while Intel VA-API only exposes Constrained
+  Baseline. Hardware setup therefore failed and libVLC fell back to VDPAU
+  (Nvidia-only), which produced the harmless "Failed to open VDPAU backend"
+  message. Software decoding avoids both probes and uses only a few percent of
+  one CPU core at 720p.
 
 Snapshots are saved to `~/Pictures/Videos`; recordings of library playback to
 `~/.local/share/videos/recordings`.

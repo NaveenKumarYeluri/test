@@ -1084,6 +1084,11 @@ class VideosWindow(Gtk.Window):
             "id": -1,
         }
         self.current_is_live = True
+        # The phone encodes plain Baseline H.264 (no constraint flags), while
+        # Intel VA-API only exposes Constrained Baseline.  Hardware setup then
+        # fails and VLC probes VDPAU, which needs an Nvidia driver.  The live
+        # mirror is small enough to decode in software, so skip both probes.
+        live_options = [":avcodec-hw=none"]
         if mode == "usb":
             self.media = self.libvlc.media(
                 mrl=source,
@@ -1093,7 +1098,7 @@ class VideosWindow(Gtk.Window):
                     ":demux=avformat",
                     ":network-caching=800",
                     ":http-reconnect",
-                ],
+                ] + live_options,
             )
         else:
             self.media = self.libvlc.media(
@@ -1102,7 +1107,7 @@ class VideosWindow(Gtk.Window):
                     ":demux=avformat",
                     ":avformat-format=sdp",
                     ":network-caching=800",
-                ],
+                ] + live_options,
             )
         self.player.set_media(self.media)
         self.player.play()

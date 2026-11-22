@@ -102,6 +102,9 @@ Recordings are written to `~/.local/share/videos/recordings/`, snapshots to
 * Live capture is capped at a 1440 px long edge and H.264 Baseline level 4.0
   for the MediaTek encoder on the test device. The resolution and bitrate are
   reported by `/api/live/status`.
+* The phone holds a dim screen wake lock while mirroring. Android stops
+  producing projection frames when the display turns off, so the lock keeps
+  the picture live; stopping the mirror releases it.
 * Contact the same Wi-Fi network for the RTP path; UDP ports 5004/5006 must not
   be blocked by a firewall.
 

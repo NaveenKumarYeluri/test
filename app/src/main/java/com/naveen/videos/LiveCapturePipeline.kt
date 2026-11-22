@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.Display
 import android.view.Surface
@@ -62,6 +63,13 @@ class LiveCapturePipeline(
     private var audioConfig: ByteArray? = null
     private var lastSps: ByteArray? = null
     private var lastPps: ByteArray? = null
+
+    /**
+     * Keeps the display awake while mirroring.  When the phone screen turns
+     * off MediaProjection stops producing frames, so the laptop picture would
+     * freeze until the screen is woken again.
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
 
     /**
      * Set by the HTTP layer (possibly from another thread) and consumed by the
@@ -120,6 +128,7 @@ class LiveCapturePipeline(
         // late) must not reset the state of its successor.
         LiveState.session = this
         LiveState.recording = false
+        acquireWakeLock()
         try {
             if (isUsb) {
                 startUsbTransport()
@@ -162,6 +171,32 @@ class LiveCapturePipeline(
         } catch (t: Throwable) {
             fail(t)
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireWakeLock() {
+        if (wakeLock != null) return
+        try {
+            val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val lock = power.newWakeLock(
+                PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "Videos:live"
+            )
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            wakeLock = lock
+            LiveState.trace("wakeLock:acquired")
+        } catch (t: Throwable) {
+            LiveState.trace("wakeLock:${t.javaClass.simpleName}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.release()
+        } catch (_: Throwable) {
+        }
+        wakeLock = null
     }
 
     private fun startUsbTransport() {
@@ -494,6 +529,7 @@ class LiveCapturePipeline(
         if (!finished.compareAndSet(false, true)) return
         LiveState.trace("pipe.finish:$error")
         running.set(false)
+        releaseWakeLock()
         unregisterDisplayListener()
         try {
             virtualDisplay?.release()

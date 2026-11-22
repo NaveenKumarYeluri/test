@@ -98,6 +98,9 @@ Useful options:
   (Nvidia-only), which produced the harmless "Failed to open VDPAU backend"
   message. Software decoding avoids both probes and uses only a few percent of
   one CPU core at 720p.
+* While mirroring, the phone keeps its display on with a dim wake lock.
+  Android produces no projection frames with the screen off, so this is what
+  keeps the laptop picture live; stopping the mirror releases the lock.
 
 Snapshots are saved to `~/Pictures/Videos`; recordings of library playback to
 `~/.local/share/videos/recordings`.
